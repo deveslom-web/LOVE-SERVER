@@ -1,0 +1,11 @@
+ 
+ ## developer- JUBAYER CODEX 
+ 
+ 
+🛑 api end point - player-info?uid={uid}
+
+
+YouTube Channel Name- no 
+
+
+TUTORIAL VIDEO LINK- no video
