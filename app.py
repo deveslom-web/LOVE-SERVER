@@ -20,7 +20,7 @@ MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
 RELEASEVERSION = "OB53"
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
-SUPPORTED_REGIONS = {"BD"}
+SUPPORTED_REGIONS = {"IND", "BR", "US", "SAC", "NA", "SG", "RU", "ID", "TW", "VN", "TH", "ME", "PK", "CIS", "BD", "EUROPE"}
 
 # === Flask App Setup ===
 
@@ -28,6 +28,7 @@ app = Flask(__name__)
 CORS(app)
 cache = TTLCache(maxsize=100, ttl=300)
 cached_tokens = defaultdict(dict)
+uid_region_cache = {}
 
 # === Helper Functions ===
 
@@ -49,8 +50,13 @@ async def json_to_proto(json_data: str, proto_message: Message) -> bytes:
     return proto_message.SerializeToString()
 
 def get_account_credentials(region: str) -> str:
-    # আপনার দেওয়া সঠিক UID এবং Password এখানে সেট করা হয়েছে
-    return "uid=4583733541&password=97A723E1A9EE1340270B3E8A29A8E311BC15205DBAC6BB1511E5BC5E8D0E1B90"
+    r = region.upper()
+    if r == "BD":
+        return "uid=4421504713&password=JOBAYAR_CODX-64IGDYZCD"
+    elif r in {"BR", "US", "SAC", "NA"}:
+        return "uid=4583702915&password=A7848AC95F54B04FBDC5FD69414FCE18CE3654599A412CBCA374286651982DA8"
+    else:
+        return "uid=4660781076&password=jshsjs_T7BNL_BY_SPIDEERIO_GAMING_2R92G"
 
 # === Token Generation ===
 
@@ -101,54 +107,68 @@ async def get_token_info(region: str) -> Tuple[str,str,str]:
     return info['token'], info['region'], info['server_url']
 
 async def GetAccountInformation(uid, unk, region, endpoint):
-    # OB53 এর জন্য প্যারামিটার রিফাইন করা হয়েছে
-    payload_dict = {'a': str(uid), 'b': str(unk)}
-    payload = await json_to_proto(json.dumps(payload_dict), main_pb2.GetPlayerPersonalShow())
+    payload = await json_to_proto(json.dumps({'a': uid, 'b': unk}), main_pb2.GetPlayerPersonalShow())
     data_enc = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, payload)
-    
     token, lock, server = await get_token_info(region)
-    
-    headers = {
-        'User-Agent': USERAGENT,
-        'Connection': "Keep-Alive",
-        'Accept-Encoding': "gzip",
-        'Content-Type': "application/octet-stream",
-        'Expect': "100-continue",
-        'Authorization': token,
-        'X-Unity-Version': "2018.4.11f1",
-        'X-GA': "v1 1",
-        'ReleaseVersion': RELEASEVERSION
-    }
-    
+    headers = {'User-Agent': USERAGENT, 'Connection': "Keep-Alive", 'Accept-Encoding': "gzip",
+               'Content-Type': "application/octet-stream", 'Expect': "100-continue",
+               'Authorization': token, 'X-Unity-Version': "2018.4.11f1", 'X-GA': "v1 1",
+               'ReleaseVersion': RELEASEVERSION}
     async with httpx.AsyncClient() as client:
-        url = f"{server}{endpoint}" if server.endswith('/') == False else f"{server[:-1]}{endpoint}"
-        resp = await client.post(url, data=data_enc, headers=headers)
-        
-        # ডিকোডিং এর সময় 'preserving_proto_field_name=True' ব্যবহার করা হয়েছে যাতে অরিজিনাল নাম আসে
-        decoded_msg = decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)
-        return json.loads(json_format.MessageToJson(decoded_msg, preserving_proto_field_name=True))
+        resp = await client.post(server+endpoint, data=data_enc, headers=headers)
+        return json.loads(json_format.MessageToJson(decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)))
+
+# === Caching Decorator ===
+
+def cached_endpoint(ttl=300):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*a, **k):
+            key = (request.path, tuple(request.args.items()))
+            if key in cache:
+                return cache[key]
+            res = fn(*a, **k)
+            cache[key] = res
+            return res
+        return wrapper
+    return decorator
 
 # === Flask Routes ===
 
 @app.route('/player-info')
+@cached_endpoint()
 def get_account_info():
     uid = request.args.get('uid')
     if not uid:
         return jsonify({"error": "Please provide UID."}), 400
 
-    region = "BD"
-    try:
-        # OB53 তে অনেক সময় 'unk' ভ্যালু 1 ব্যবহার করলে একদম তাজা ডাটা পাওয়া যায়
-        return_data = asyncio.run(GetAccountInformation(uid, "1", region, "/GetPlayerPersonalShow"))
-        
-        # যদি ভুল ডাটা আসে, তবে '7' দিয়ে আবার চেষ্টা করবে
-        if int(return_data.get("basicInfo", {}).get("level", 0)) < 10:
-             return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
+    # Check cached region for UID
+    if uid in uid_region_cache:
+        try:
+            return_data = asyncio.run(GetAccountInformation(uid, "7", uid_region_cache[uid], "/GetPlayerPersonalShow"))
+            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
+            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
+        except:
+            pass  # fallback to testing all regions
 
-        formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
-        return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
+    for region in SUPPORTED_REGIONS:
+        try:
+            return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
+            uid_region_cache[uid] = region
+            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
+            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
+        except:
+            continue
+
+    return jsonify({"error": "UID not found in any region."}), 404
+
+@app.route('/refresh', methods=['GET','POST'])
+def refresh_tokens_endpoint():
+    try:
+        asyncio.run(initialize_tokens())
+        return jsonify({'message':'Tokens refreshed for all regions.'}),200
     except Exception as e:
-        return jsonify({"error": "Failed to fetch data", "details": str(e)}), 404
+        return jsonify({'error': f'Refresh failed: {e}'}),500
 
 # === Startup ===
 
@@ -158,70 +178,4 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
-    app.run(host='0.0.0.0', port=5000)    
-    async with httpx.AsyncClient() as client:
-        target_url = f"{info['server_url'].rstrip('/')}/GetPlayerPersonalShow"
-        resp = await client.post(target_url, data=data_enc, headers=headers)
-        
-        player_info = AccountPersonalShow_pb2.AccountPersonalShowInfo()
-        player_info.ParseFromString(resp.content)
-        return json.loads(json_format.MessageToJson(player_info, preserving_proto_field_name=True))
-
-@app.route('/player-info')
-def get_player():
-    uid = request.args.get('uid')
-    if not uid:
-        return jsonify({"error": "UID is required"}), 400
-    
-    try:
-        data = asyncio.run(get_account_info_raw(uid, "BD"))
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": "Failed to fetch player info", "details": str(e)}), 500
-
-if __name__ == '__main__':
-    # Initial token generation
-    asyncio.run(create_jwt("BD"))
-    app.run(host='0.0.0.0', port=5000)    
-    async with httpx.AsyncClient() as client:
-        # Construct proper URL
-        base_url = server.rstrip('/')
-        full_url = f"{base_url}/{endpoint.lstrip('/')}"
-        
-        resp = await client.post(full_url, data=data_enc, headers=headers)
-        decoded_msg = decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)
-        return json.loads(json_format.MessageToJson(decoded_msg, preserving_proto_field_name=True))
-
-# === Flask Routes ===
-
-@app.route('/player-info')
-def get_account_info():
-    uid = request.args.get('uid')
-    if not uid:
-        return jsonify({"error": "Please provide UID."}), 400
-
-    region = "BD"
-    try:
-        # Request with unk="1" first for fresh data
-        return_data = asyncio.run(GetAccountInformation(uid, "1", region, "/GetPlayerPersonalShow"))
-        
-        # Fallback to "7" if basicInfo is missing
-        if "basicInfo" not in return_data:
-            return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
-
-        return jsonify(return_data)
-    except Exception as e:
-        return jsonify({"error": "Fetch failed", "details": str(e)}), 500
-
-# === Startup ===
-
-async def startup():
-    await initialize_tokens()
-
-async def initialize_tokens():
-    tasks = [create_jwt(r) for r in SUPPORTED_REGIONS]
-    await asyncio.gather(*tasks)
-
-if __name__ == '__main__':
-    asyncio.run(startup())
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
