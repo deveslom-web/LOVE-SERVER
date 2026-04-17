@@ -20,8 +20,6 @@ MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
 RELEASEVERSION = "OB53"
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
-
-# এখানে শুধুমাত্র বাংলাদেশ (BD) রাখা হয়েছে
 SUPPORTED_REGIONS = {"BD"}
 
 # === Flask App Setup ===
@@ -30,6 +28,7 @@ app = Flask(__name__)
 CORS(app)
 cache = TTLCache(maxsize=100, ttl=300)
 cached_tokens = defaultdict(dict)
+uid_region_cache = {}
 
 # === Helper Functions ===
 
@@ -51,8 +50,13 @@ async def json_to_proto(json_data: str, proto_message: Message) -> bytes:
     return proto_message.SerializeToString()
 
 def get_account_credentials(region: str) -> str:
-    # ডিফল্ট হিসেবে বাংলাদেশের ক্রেডেনশিয়াল ব্যবহার হবে
-    return "uid=4583733541&password=97A723E1A9EE1340270B3E8A29A8E311BC15205DBAC6BB1511E5BC5E8D0E1B90"
+    r = region.upper()
+    if r == "BD":
+        return "uid=4421504713&password=JOBAYAR_CODX-64IGDYZCD"
+    elif r in {"BR", "US", "SAC", "NA"}:
+        return "uid=4044223479&password=EB067625F1E2CB705C7561747A46D502480DC5D41497F4C90F3FDBC73B8082ED"
+    else:
+        return "uid=4660781076&password=jshsjs_T7BNL_BY_SPIDEERIO_GAMING_2R92G"
 
 # === Token Generation ===
 
@@ -138,20 +142,31 @@ def get_account_info():
     if not uid:
         return jsonify({"error": "Please provide UID."}), 400
 
-    # শুধুমাত্র বাংলাদেশ (BD) রিজিয়নে রিকোয়েস্ট পাঠানো হবে
-    region = "BD"
-    try:
-        return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
-        formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
-        return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
-    except Exception as e:
-        return jsonify({"error": "UID not found in Bangladesh region or connection error."}), 404
+    # Check cached region for UID
+    if uid in uid_region_cache:
+        try:
+            return_data = asyncio.run(GetAccountInformation(uid, "7", uid_region_cache[uid], "/GetPlayerPersonalShow"))
+            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
+            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
+        except:
+            pass  # fallback to testing all regions
+
+    for region in SUPPORTED_REGIONS:
+        try:
+            return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
+            uid_region_cache[uid] = region
+            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
+            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
+        except:
+            continue
+
+    return jsonify({"error": "UID not found in any region."}), 404
 
 @app.route('/refresh', methods=['GET','POST'])
 def refresh_tokens_endpoint():
     try:
         asyncio.run(initialize_tokens())
-        return jsonify({'message':'Tokens refreshed for BD region.'}),200
+        return jsonify({'message':'Tokens refreshed for all regions.'}),200
     except Exception as e:
         return jsonify({'error': f'Refresh failed: {e}'}),500
 
