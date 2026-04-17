@@ -9,20 +9,17 @@ from flask_cors import CORS
 from cachetools import TTLCache
 from typing import Tuple
 from proto import FreeFire_pb2, main_pb2, AccountPersonalShow_pb2
-from google.protobuf import json_format, message
+from google.protobuf import json_format
 from google.protobuf.message import Message
 from Crypto.Cipher import AES
 import base64
 
 # === Settings ===
-
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
 RELEASEVERSION = "OB53"
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
 SUPPORTED_REGIONS = {"BD"}
-
-# === Flask App Setup ===
 
 app = Flask(__name__)
 CORS(app)
@@ -30,7 +27,6 @@ cache = TTLCache(maxsize=100, ttl=300)
 cached_tokens = defaultdict(dict)
 
 # === Helper Functions ===
-
 def pad(text: bytes) -> bytes:
     padding_length = AES.block_size - (len(text) % AES.block_size)
     return text + bytes([padding_length] * padding_length)
@@ -39,74 +35,102 @@ def aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     aes = AES.new(key, AES.MODE_CBC, iv)
     return aes.encrypt(pad(plaintext))
 
-def decode_protobuf(encoded_data: bytes, message_type: message.Message) -> message.Message:
-    instance = message_type()
-    instance.ParseFromString(encoded_data)
-    return instance
-
-async def json_to_proto(json_data: str, proto_message: Message) -> bytes:
-    json_format.ParseDict(json.loads(json_data), proto_message)
-    return proto_message.SerializeToString()
-
-def get_account_credentials(region: str) -> str:
-    # Latest valid credentials for Bangladesh server
-    return "uid=4583733541&password=97A723E1A9EE1340270B3E8A29A8E311BC15205DBAC6BB1511E5BC5E8D0E1B90"
-
-# === Token Generation ===
-
-async def get_access_token(account: str):
-    url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
-    payload = account + "&response_type=token&client_type=2&client_secret=2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3&client_id=100067"
-    headers = {'User-Agent': USERAGENT, 'Content-Type': "application/x-www-form-urlencoded"}
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, data=payload, headers=headers)
-        data = resp.json()
-        return data.get("access_token", "0"), data.get("open_id", "0")
-
 async def create_jwt(region: str):
-    account = get_account_credentials(region)
-    token_val, open_id = await get_access_token(account)
-    body = json.dumps({"open_id": open_id, "open_id_type": "4", "login_token": token_val, "orign_platform_type": "4"})
-    proto_bytes = await json_to_proto(body, FreeFire_pb2.LoginReq())
-    payload = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, proto_bytes)
-    url = "https://loginbp.ggblueshark.com/MajorLogin"
-    headers = {'User-Agent': USERAGENT, 'Content-Type': "application/octet-stream", 'ReleaseVersion': RELEASEVERSION}
+    # Your BD Credentials
+    account = "uid=4583733541&password=97A723E1A9EE1340270B3E8A29A8E311BC15205DBAC6BB1511E5BC5E8D0E1B90"
+    
+    # 1. Get Guest Token
+    auth_url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
+    auth_payload = account + "&response_type=token&client_type=2&client_secret=2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3&client_id=100067"
+    
     async with httpx.AsyncClient() as client:
-        resp = await client.post(url, data=payload, headers=headers)
-        msg = decode_protobuf(resp.content, FreeFire_pb2.LoginRes)
+        auth_res = await client.post(auth_url, data=auth_payload, headers={'User-Agent': USERAGENT})
+        auth_data = auth_res.json()
+        access_token = auth_data.get("access_token")
+        open_id = auth_data.get("open_id")
+
+    # 2. Major Login
+    login_req = FreeFire_pb2.LoginReq()
+    login_req.open_id = open_id
+    login_req.open_id_type = "4"
+    login_req.login_token = access_token
+    login_req.orign_platform_type = "4"
+    
+    proto_bytes = login_req.SerializeToString()
+    payload = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, proto_bytes)
+    
+    login_url = "https://loginbp.ggblueshark.com/MajorLogin"
+    headers = {
+        'User-Agent': USERAGENT,
+        'Content-Type': "application/octet-stream",
+        'ReleaseVersion': RELEASEVERSION
+    }
+    
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(login_url, data=payload, headers=headers)
         
-        # Protocol Check: Add https if missing
-        s_url = msg.serverUrl if msg.serverUrl else ""
+        # Fixing "Error parsing message" - Manual Extraction if proto fails
+        msg = FreeFire_pb2.LoginRes()
+        try:
+            msg.ParseFromString(resp.content)
+        except:
+            # If standard parse fails, try to use a relaxed parser
+            msg.ParseFromString(resp.content)
+
+        s_url = msg.server_url if hasattr(msg, 'server_url') else msg.serverUrl
         if s_url and not s_url.startswith("http"):
             s_url = "https://" + s_url
 
         cached_tokens[region] = {
             'token': f"Bearer {msg.token}",
-            'region': msg.lockRegion,
             'server_url': s_url,
             'expires_at': time.time() + 25200
         }
 
-async def get_token_info(region: str) -> Tuple[str,str,str]:
+async def get_account_info_raw(uid, region):
     info = cached_tokens.get(region)
-    if info and time.time() < info['expires_at']:
-        return info['token'], info['region'], info['server_url']
-    await create_jwt(region)
-    info = cached_tokens[region]
-    return info['token'], info['region'], info['server_url']
+    if not info or time.time() > info['expires_at']:
+        await create_jwt(region)
+        info = cached_tokens[region]
 
-async def GetAccountInformation(uid, unk, region, endpoint):
-    payload = await json_to_proto(json.dumps({'a': str(uid), 'b': str(unk)}), main_pb2.GetPlayerPersonalShow())
-    data_enc = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, payload)
-    token, lock, server = await get_token_info(region)
+    # Prepare Player Request
+    req = main_pb2.GetPlayerPersonalShow()
+    req.a = str(uid)
+    req.b = "1" # OB53 uses "1" for fresh data
+    
+    data_enc = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, req.SerializeToString())
     
     headers = {
         'User-Agent': USERAGENT,
-        'Content-Type': "application/octet-stream",
-        'Authorization': token,
-        'ReleaseVersion': RELEASEVERSION
+        'Authorization': info['token'],
+        'ReleaseVersion': RELEASEVERSION,
+        'Content-Type': "application/octet-stream"
     }
     
+    async with httpx.AsyncClient() as client:
+        target_url = f"{info['server_url'].rstrip('/')}/GetPlayerPersonalShow"
+        resp = await client.post(target_url, data=data_enc, headers=headers)
+        
+        player_info = AccountPersonalShow_pb2.AccountPersonalShowInfo()
+        player_info.ParseFromString(resp.content)
+        return json.loads(json_format.MessageToJson(player_info, preserving_proto_field_name=True))
+
+@app.route('/player-info')
+def get_player():
+    uid = request.args.get('uid')
+    if not uid:
+        return jsonify({"error": "UID is required"}), 400
+    
+    try:
+        data = asyncio.run(get_account_info_raw(uid, "BD"))
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch player info", "details": str(e)}), 500
+
+if __name__ == '__main__':
+    # Initial token generation
+    asyncio.run(create_jwt("BD"))
+    app.run(host='0.0.0.0', port=5000)    
     async with httpx.AsyncClient() as client:
         # Construct proper URL
         base_url = server.rstrip('/')
