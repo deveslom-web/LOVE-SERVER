@@ -18,9 +18,9 @@ import base64
 
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
-RELEASEVERSION = "OB53"
+RELEASEVERSION = "OB53" # আপনার ভার্সন আপডেট করা হয়েছে
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
-SUPPORTED_REGIONS = {"BD"}
+SUPPORTED_REGIONS = {"BD"} # শুধুমাত্র বাংলাদেশ
 
 # === Flask App Setup ===
 
@@ -50,13 +50,8 @@ async def json_to_proto(json_data: str, proto_message: Message) -> bytes:
     return proto_message.SerializeToString()
 
 def get_account_credentials(region: str) -> str:
-    r = region.upper()
-    if r == "BD":
-        return "uid=4421504713&password=JOBAYAR_CODX-64IGDYZCD"
-    elif r in {"BR", "US", "SAC", "NA"}:
-        return "uid=4044223479&password=EB067625F1E2CB705C7561747A46D502480DC5D41497F4C90F3FDBC73B8082ED"
-    else:
-        return "uid=4660781076&password=jshsjs_T7BNL_BY_SPIDEERIO_GAMING_2R92G"
+    # এখানে আপনার দেওয়া নতুন এবং সঠিক লগইন ডিটেইলস বসানো হয়েছে
+    return "uid=4583733541&password=97A723E1A9EE1340270B3E8A29A8E311BC15205DBAC6BB1511E5BC5E8D0E1B90"
 
 # === Token Generation ===
 
@@ -116,59 +111,25 @@ async def GetAccountInformation(uid, unk, region, endpoint):
                'ReleaseVersion': RELEASEVERSION}
     async with httpx.AsyncClient() as client:
         resp = await client.post(server+endpoint, data=data_enc, headers=headers)
+        # সঠিক Protobuf মেজাজ ডিকোড করা হচ্ছে
         return json.loads(json_format.MessageToJson(decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)))
-
-# === Caching Decorator ===
-
-def cached_endpoint(ttl=300):
-    def decorator(fn):
-        @wraps(fn)
-        def wrapper(*a, **k):
-            key = (request.path, tuple(request.args.items()))
-            if key in cache:
-                return cache[key]
-            res = fn(*a, **k)
-            cache[key] = res
-            return res
-        return wrapper
-    return decorator
 
 # === Flask Routes ===
 
 @app.route('/player-info')
-@cached_endpoint()
 def get_account_info():
     uid = request.args.get('uid')
     if not uid:
         return jsonify({"error": "Please provide UID."}), 400
 
-    # Check cached region for UID
-    if uid in uid_region_cache:
-        try:
-            return_data = asyncio.run(GetAccountInformation(uid, "7", uid_region_cache[uid], "/GetPlayerPersonalShow"))
-            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
-            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
-        except:
-            pass  # fallback to testing all regions
-
-    for region in SUPPORTED_REGIONS:
-        try:
-            return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
-            uid_region_cache[uid] = region
-            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
-            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
-        except:
-            continue
-
-    return jsonify({"error": "UID not found in any region."}), 404
-
-@app.route('/refresh', methods=['GET','POST'])
-def refresh_tokens_endpoint():
+    region = "BD"
     try:
-        asyncio.run(initialize_tokens())
-        return jsonify({'message':'Tokens refreshed for all regions.'}),200
+        # সরাসরি BD রিজিয়ন থেকে অরিজিনাল ডেটা আনা হচ্ছে
+        return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
+        formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
+        return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
     except Exception as e:
-        return jsonify({'error': f'Refresh failed: {e}'}),500
+        return jsonify({"error": "UID not found or invalid response."}), 404
 
 # === Startup ===
 
@@ -178,4 +139,4 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
