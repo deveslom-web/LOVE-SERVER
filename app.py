@@ -18,9 +18,9 @@ import base64
 
 MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
-RELEASEVERSION = "OB53" # আপনার ভার্সন আপডেট করা হয়েছে
+RELEASEVERSION = "OB53"
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
-SUPPORTED_REGIONS = {"BD"} # শুধুমাত্র বাংলাদেশ
+SUPPORTED_REGIONS = {"BD"}
 
 # === Flask App Setup ===
 
@@ -28,7 +28,6 @@ app = Flask(__name__)
 CORS(app)
 cache = TTLCache(maxsize=100, ttl=300)
 cached_tokens = defaultdict(dict)
-uid_region_cache = {}
 
 # === Helper Functions ===
 
@@ -50,7 +49,7 @@ async def json_to_proto(json_data: str, proto_message: Message) -> bytes:
     return proto_message.SerializeToString()
 
 def get_account_credentials(region: str) -> str:
-    # এখানে আপনার দেওয়া নতুন এবং সঠিক লগইন ডিটেইলস বসানো হয়েছে
+    # আপনার দেওয়া সঠিক UID এবং Password এখানে সেট করা হয়েছে
     return "uid=4583733541&password=97A723E1A9EE1340270B3E8A29A8E311BC15205DBAC6BB1511E5BC5E8D0E1B90"
 
 # === Token Generation ===
@@ -102,17 +101,32 @@ async def get_token_info(region: str) -> Tuple[str,str,str]:
     return info['token'], info['region'], info['server_url']
 
 async def GetAccountInformation(uid, unk, region, endpoint):
-    payload = await json_to_proto(json.dumps({'a': uid, 'b': unk}), main_pb2.GetPlayerPersonalShow())
+    # OB53 এর জন্য প্যারামিটার রিফাইন করা হয়েছে
+    payload_dict = {'a': str(uid), 'b': str(unk)}
+    payload = await json_to_proto(json.dumps(payload_dict), main_pb2.GetPlayerPersonalShow())
     data_enc = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, payload)
+    
     token, lock, server = await get_token_info(region)
-    headers = {'User-Agent': USERAGENT, 'Connection': "Keep-Alive", 'Accept-Encoding': "gzip",
-               'Content-Type': "application/octet-stream", 'Expect': "100-continue",
-               'Authorization': token, 'X-Unity-Version': "2018.4.11f1", 'X-GA': "v1 1",
-               'ReleaseVersion': RELEASEVERSION}
+    
+    headers = {
+        'User-Agent': USERAGENT,
+        'Connection': "Keep-Alive",
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/octet-stream",
+        'Expect': "100-continue",
+        'Authorization': token,
+        'X-Unity-Version': "2018.4.11f1",
+        'X-GA': "v1 1",
+        'ReleaseVersion': RELEASEVERSION
+    }
+    
     async with httpx.AsyncClient() as client:
-        resp = await client.post(server+endpoint, data=data_enc, headers=headers)
-        # সঠিক Protobuf মেজাজ ডিকোড করা হচ্ছে
-        return json.loads(json_format.MessageToJson(decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)))
+        url = f"{server}{endpoint}" if server.endswith('/') == False else f"{server[:-1]}{endpoint}"
+        resp = await client.post(url, data=data_enc, headers=headers)
+        
+        # ডিকোডিং এর সময় 'preserving_proto_field_name=True' ব্যবহার করা হয়েছে যাতে অরিজিনাল নাম আসে
+        decoded_msg = decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)
+        return json.loads(json_format.MessageToJson(decoded_msg, preserving_proto_field_name=True))
 
 # === Flask Routes ===
 
@@ -124,12 +138,17 @@ def get_account_info():
 
     region = "BD"
     try:
-        # সরাসরি BD রিজিয়ন থেকে অরিজিনাল ডেটা আনা হচ্ছে
-        return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
+        # OB53 তে অনেক সময় 'unk' ভ্যালু 1 ব্যবহার করলে একদম তাজা ডাটা পাওয়া যায়
+        return_data = asyncio.run(GetAccountInformation(uid, "1", region, "/GetPlayerPersonalShow"))
+        
+        # যদি ভুল ডাটা আসে, তবে '7' দিয়ে আবার চেষ্টা করবে
+        if int(return_data.get("basicInfo", {}).get("level", 0)) < 10:
+             return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
+
         formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
         return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
     except Exception as e:
-        return jsonify({"error": "UID not found or invalid response."}), 404
+        return jsonify({"error": "Failed to fetch data", "details": str(e)}), 404
 
 # === Startup ===
 
