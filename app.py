@@ -20,7 +20,8 @@ MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')
 MAIN_IV = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')
 RELEASEVERSION = "OB53"
 USERAGENT = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
-SUPPORTED_REGIONS = {"IND", "BR", "US", "SAC", "NA", "SG", "RU", "ID", "TW", "VN", "TH", "ME", "PK", "CIS", "BD", "EUROPE"}
+# Set only to Bangladesh
+SUPPORTED_REGIONS = {"BD"}
 
 # === Flask App Setup ===
 
@@ -28,7 +29,6 @@ app = Flask(__name__)
 CORS(app)
 cache = TTLCache(maxsize=100, ttl=300)
 cached_tokens = defaultdict(dict)
-uid_region_cache = {}
 
 # === Helper Functions ===
 
@@ -50,13 +50,8 @@ async def json_to_proto(json_data: str, proto_message: Message) -> bytes:
     return proto_message.SerializeToString()
 
 def get_account_credentials(region: str) -> str:
-    r = region.upper()
-    if r == "BD":
-        return "uid=4421504713&password=JOBAYAR_CODX-64IGDYZCD"
-    elif r in {"BR", "US", "SAC", "NA"}:
-        return "uid=4583702915&password=A7848AC95F54B04FBDC5FD69414FCE18CE3654599A412CBCA374286651982DA8"
-    else:
-        return "uid=4660781076&password=jshsjs_T7BNL_BY_SPIDEERIO_GAMING_2R92G"
+    # Using your latest provided credentials for BD
+    return "uid=4583733541&password=97A723E1A9EE1340270B3E8A29A8E311BC15205DBAC6BB1511E5BC5E8D0E1B90"
 
 # === Token Generation ===
 
@@ -107,7 +102,7 @@ async def get_token_info(region: str) -> Tuple[str,str,str]:
     return info['token'], info['region'], info['server_url']
 
 async def GetAccountInformation(uid, unk, region, endpoint):
-    payload = await json_to_proto(json.dumps({'a': uid, 'b': unk}), main_pb2.GetPlayerPersonalShow())
+    payload = await json_to_proto(json.dumps({'a': str(uid), 'b': str(unk)}), main_pb2.GetPlayerPersonalShow())
     data_enc = aes_cbc_encrypt(MAIN_KEY, MAIN_IV, payload)
     token, lock, server = await get_token_info(region)
     headers = {'User-Agent': USERAGENT, 'Connection': "Keep-Alive", 'Accept-Encoding': "gzip",
@@ -115,60 +110,41 @@ async def GetAccountInformation(uid, unk, region, endpoint):
                'Authorization': token, 'X-Unity-Version': "2018.4.11f1", 'X-GA': "v1 1",
                'ReleaseVersion': RELEASEVERSION}
     async with httpx.AsyncClient() as client:
-        resp = await client.post(server+endpoint, data=data_enc, headers=headers)
-        return json.loads(json_format.MessageToJson(decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)))
-
-# === Caching Decorator ===
-
-def cached_endpoint(ttl=300):
-    def decorator(fn):
-        @wraps(fn)
-        def wrapper(*a, **k):
-            key = (request.path, tuple(request.args.items()))
-            if key in cache:
-                return cache[key]
-            res = fn(*a, **k)
-            cache[key] = res
-            return res
-        return wrapper
-    return decorator
+        url = f"{server}{endpoint}" if not server.endswith('/') else f"{server[:-1]}{endpoint}"
+        resp = await client.post(url, data=data_enc, headers=headers)
+        decoded_msg = decode_protobuf(resp.content, AccountPersonalShow_pb2.AccountPersonalShowInfo)
+        # Using preserving_proto_field_name to ensure original data structure
+        return json.loads(json_format.MessageToJson(decoded_msg, preserving_proto_field_name=True))
 
 # === Flask Routes ===
 
 @app.route('/player-info')
-@cached_endpoint()
 def get_account_info():
     uid = request.args.get('uid')
     if not uid:
         return jsonify({"error": "Please provide UID."}), 400
 
-    # Check cached region for UID
-    if uid in uid_region_cache:
-        try:
-            return_data = asyncio.run(GetAccountInformation(uid, "7", uid_region_cache[uid], "/GetPlayerPersonalShow"))
-            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
-            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
-        except:
-            pass  # fallback to testing all regions
-
-    for region in SUPPORTED_REGIONS:
-        try:
+    region = "BD"
+    try:
+        # Using '1' for unk as it often provides fresher data in OB53
+        return_data = asyncio.run(GetAccountInformation(uid, "1", region, "/GetPlayerPersonalShow"))
+        
+        # Fallback if basic data is missing
+        if not return_data.get("basicInfo"):
             return_data = asyncio.run(GetAccountInformation(uid, "7", region, "/GetPlayerPersonalShow"))
-            uid_region_cache[uid] = region
-            formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
-            return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
-        except:
-            continue
 
-    return jsonify({"error": "UID not found in any region."}), 404
+        formatted_json = json.dumps(return_data, indent=2, ensure_ascii=False)
+        return formatted_json, 200, {'Content-Type': 'application/json; charset=utf-8'}
+    except Exception as e:
+        return jsonify({"error": "Fetch failed", "details": str(e)}), 404
 
 @app.route('/refresh', methods=['GET','POST'])
 def refresh_tokens_endpoint():
     try:
         asyncio.run(initialize_tokens())
-        return jsonify({'message':'Tokens refreshed for all regions.'}),200
+        return jsonify({'status': 'success', 'message': 'Tokens refreshed for BD.'}), 200
     except Exception as e:
-        return jsonify({'error': f'Refresh failed: {e}'}),500
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # === Startup ===
 
@@ -178,4 +154,4 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
