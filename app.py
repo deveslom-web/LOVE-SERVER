@@ -52,7 +52,7 @@ async def json_to_proto(json_data: str, proto_message: Message) -> bytes:
 
 def get_account_credentials(region: str) -> str:
     # ডিফল্ট হিসেবে বাংলাদেশের ক্রেডেনশিয়াল ব্যবহার হবে
-    return "uid=4660781076&password=jshsjs_T7BNL_BY_SPIDEERIO_GAMING_2R92G"
+    return "uid=4583733541&password=97A723E1A9EE1340270B3E8A29A8E311BC15205DBAC6BB1511E5BC5E8D0E1B90"
 
 # === Token Generation ===
 
